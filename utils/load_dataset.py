@@ -3,15 +3,55 @@ import os
 import glob
 from collections import defaultdict
 
+import random
+
 import pandas as pd
 import numpy as np
 
-# sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
-# import rxrx.io as rio
+sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
+import rxrx.io as rio
+
+import torch.nn.functional as F
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+
+# def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
+#     result = []
+#
+#     wells = os.listdir(base_path)
+#     for well in wells:
+#         plates = os.listdir(os.path.join(base_path, well))
+#         for plate in plates:
+#             images = glob.glob(os.path.join(base_path, well, plate, "*"))
+#             temp_dict = defaultdict(list)
+#
+#             for image in images:
+#                 basename = os.path.basename(image)
+#                 elem = basename.split("_")
+#                 setname = "_".join(elem[:2])
+#                 # channel = elem[2]
+#                 temp_dict[setname].append(image)
+#
+#             for val in temp_dict.values():
+#                 # if len(val) != 6: continue
+#                 result.append(sorted(val))
+#
+#     return result
 
 
 def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
-    result = []
+    """
+        return a dictionary
+        -keys : sample info
+        -values : a list of sample file paths
+
+        -----------------------------------
+        (sample example)
+
+
+        """
+    dataset_dict = dict()
 
     wells = os.listdir(base_path)
     for well in wells:
@@ -21,28 +61,169 @@ def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
             temp_dict = defaultdict(list)
 
             for image in images:
-                basename = os.path.basename(image)
+                #dirs = os.path.split(image)
+                normpath = os.path.normpath(image)
+                dirs = normpath.split(os.sep)
+                basename = dirs[-1]
                 elem = basename.split("_")
-                setname = "_".join(elem[:2])
+                pre = dirs[-3]
+                plate = dirs[-2][-1]
+                suf = "_".join(elem[:2])
                 # channel = elem[2]
-                temp_dict[setname].append(image)
+                sample_info = "{}_{}_{}".format(pre, plate, suf)
+                temp_dict[sample_info].append(image)
 
-            for val in temp_dict.values():
+            for key, val in temp_dict.items():
                 # if len(val) != 6: continue
-                result.append(sorted(val))
+                dataset_dict[key] = sorted(val)
 
-    return result
+    return dataset_dict
 
 
-def load_metadata(root_path="/data2/cell_perturbation"):
-    metadata_train = glob.glob(os.path.join(root_path, "train*.csv"))
+def load_metadata():
+    """
+    returns metadata as pandas.DataFrame
+    """
+    metadata = rio.combine_metadata()
 
-    meta_train_df = None
-    meta_test_df = None
+    return metadata
 
-    for i, datapath in metadata_train:
+
+def merge_all_data_to_metadata(datalist, metadata):
+    """
+    returns merged data
+
+    ------------------------------
+    datalist : list, each element produced from 'load_data_cell_perturbation' function
+    metadata : pandas.DataFrame, produced from 'load_metadata' function
+
+    -------------------------------
+    (usage ex)
+    train = load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/")
+    test = load_data_cell_perturbation(base_path="/data2/cell_perturbation/test/")
+    metadata = load_metadata()
+
+    merged_data = merge_all_data_to_metadata([train, test], metadata)
+    --------------------------------
+    """
+    concat_data_df = None
+    for i, dataset in enumerate(datalist):
+        dataset_df = pd.DataFrame(dataset).transpose()
+        dataset_df.columns = ['c{}'.format(i) for i in range(1, 7)]
+
+        rev_id_code = []
+        rev_site = []
+        for i in dataset_df.index.values.tolist():
+            elem = i.split("_")
+
+            temp_id = "_".join(elem[:-1])
+            temp_site = int(elem[-1][1])
+
+            rev_id_code.append(temp_id)
+            rev_site.append(temp_site)
+
+        dataset_df['id_code'] = rev_id_code
+        dataset_df['site'] = rev_site
+
+        dataset_df.reset_index(inplace=True)
+        dataset_df.drop('index', axis=1, inplace=True)
+
         if i == 0:
-            result_df = pd.read_csv(datapath)
+            concat_data_df = dataset_df
         else:
-            temp_df = pd.read_csv(datapath)
-            pd.concat([result_df])
+            concat_data_df = pd.concat([concat_data_df, dataset_df])
+
+    merged_data = metadata.merge(concat_data_df, how='left', on=['id_code', 'site'])
+    merged_data['sirna'] = [str(i) for i in merged_data['sirna'].values.tolist()]
+
+    return merged_data
+
+
+class TrainDatasetRecursion(Dataset):
+    def __init__(self, merged_data, isNormalize, isTrain, train_ratio=0.8, seed=10):
+        df = merged_data[merged_data['dataset'] == 'train']
+
+        if isNormalize:
+            df = self.standardize_with_nc(df)
+
+        #extract only treatments
+        df = df[df['well_type'] == 'treatment']
+
+        #split train & validation with fixed seed
+        np.random.seed(seed)
+        df = df.iloc[np.random.permutation(len(df))]
+
+        train_num = int(train_ratio * len(df))
+
+        if isTrain:
+            train_df = df.iloc[:train_num, :]
+            self.len_dataset = len(train_df)
+            self.input_array = np.array(train_df.iloc[:, -6:])
+            self.output_array = np.array(train_df.loc[:, 'sirna'])
+        else:
+            val_df = df.iloc[train_num:, :]
+            self.len_dataset = len(val_df)
+            self.input_array = np.array(val_df.iloc[:, -6:])
+            self.output_array = np.array(val_df.loc[:, 'sirna'])
+
+
+    def __len__(self):
+        return self.len_dataset
+
+    def __getitem__(self, index):
+
+        return (self.input_array[index], self.output_array[index])
+
+    def standardize_with_nc(self, df):
+        """
+        alleviates the batch effect & (plate effect if possible)
+
+        first, put together the same cell samples of 'negative control'.
+        next, standardize with sklearn.normalize or something(torch?) only for the subset above.
+        (creates a Scaler with negative control and fit treatment samples to it)
+
+
+        iterates the same process to all cases
+
+        """
+        treatment_df = df[df['well_type'] == 'treatment']
+        nc_df = df[df['well_type'] =='negative_control']
+
+        standardized_df = None
+        return standardized_df
+
+
+class TestDatasetRecursion(Dataset):
+    def __init__(self, merged_data, isNormalize):
+        df = merged_data[merged_data['dataset'] == 'test']
+
+        if isNormalize:
+            df = self.standardize_with_nc(df)
+
+        # extract only treatments
+        test_df = df[df['well_type'] == 'treatment']
+
+        self.len_dataset = len(test_df)
+        self.input_array = np.array(test_df.iloc[:, -6:])
+
+    def __len__(self):
+        return self.len_dataset
+
+    def __getitem__(self, index):
+        return self.input_array[index]
+
+    def standardize_with_nc(self, df):
+        """
+        alleviates the batch effect & (plate effect if possible)
+
+        first, put together the same cell samples of 'negative control'.
+        next, standardize with sklearn.normalize or something(torch?) only for the subset above.
+        (creates a Scaler with negative control and fit treatment samples to it)
+
+
+        iterates the same process to all cases
+
+        """
+
+        standardized_df = None
+        return standardized_df

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 #import seaborn as sns
 
 import cv2
+import math
 
 sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
 import rxrx.io as rio
@@ -93,3 +94,56 @@ def plot_channels_with_clahe(data, cliplimit, tilesize):
     for i in range(len(temp_img_list)):
         plt.subplot(2, 3, i + 1)
         plt.imshow(clahe_img_list[i], cmap='gray')
+
+
+def plot_cell_sirna_rgb(filtered_data, figsize=20):
+    """
+    plot all data in a row (Actually mutliple rows)
+
+    :param filtered_data: dataframe, after processed with 'filter_data_with_cell_sirna'
+    :param figsize: column size
+    :return:
+    """
+    data_num = len(filtered_data)
+    row_num = math.ceil((data_num // 4))
+
+    plt.figure(figsize=(figsize, figsize*row_num * 0.25))
+
+    for i in range(data_num):
+        plt.subplot(row_num, 4, i+1)
+        img_paths = filtered_data.iloc[i, -6:].tolist()
+
+        img_6channel = rio.load_images_as_tensor(img_paths)
+        img_as_rgb = rio.convert_tensor_to_rgb(img_6channel)
+        plt.title(filtered_data.iat[i, 0])
+        plt.imshow(img_as_rgb)
+
+
+def plot_cell_sirna_channels(filtered_data, figsize=20):
+    """
+    plot all data in a row (Actually mutliple rows)
+
+    :param filtered_data: dataframe, after processed with 'filter_data_with_cell_sirna'
+    :param figsize: column size
+    :return:
+    """
+    data_num = len(filtered_data) * 6
+    row_num = math.ceil((data_num // 6))
+
+    plt.figure(figsize=(figsize, figsize*row_num * 0.25))
+
+    for i in range(len(filtered_data)):
+        img_paths = filtered_data.iloc[i, -6:].tolist()
+
+        for j in range(len(img_paths)):
+            tmp_img = plt.imread(img_paths[j])
+            plt.subplot(row_num, 6, i*6 + j + 1)
+            plt.title("{}_c{}".format(filtered_data.iloc[i, 0],(j+1)))
+
+            plt.imshow(tmp_img, cmap='gray')
+
+
+
+
+
+
