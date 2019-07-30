@@ -94,6 +94,7 @@ def plot_channels_with_clahe(data, cliplimit, tilesize):
     for i in range(len(temp_img_list)):
         plt.subplot(2, 3, i + 1)
         plt.imshow(clahe_img_list[i], cmap='gray')
+        plt.title("channel {}".format(i + 1))
 
 
 def plot_cell_sirna_rgb(filtered_data, figsize=20):

@@ -11,9 +11,15 @@ import numpy as np
 sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
 import rxrx.io as rio
 
+import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torchvision.models.resnet import resnet18, resnet50
+#from torchvision.models import mobilenet torch의 v1.2.0 으로 업데이트 필요
+
+import torchvision.transforms.functional as TF
+from torchvision import transforms
 
 
 # def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
@@ -84,7 +90,8 @@ def load_metadata():
     """
     returns metadata as pandas.DataFrame
     """
-    metadata = rio.combine_metadata()
+    #metadata = rio.combine_metadata()
+    metadata = pd.read_pickle("/data2/cell_perturbation/metadata.pickle")
 
     return metadata
 
@@ -139,8 +146,31 @@ def merge_all_data_to_metadata(datalist, metadata):
     return merged_data
 
 
+def load_net(net_name, pretrained_path=None, zoo_pretrained=False):
+    if net_name == 'resnet18':
+        net = resnet18(zoo_pretrained)
+
+    elif net_name == 'resnet50':
+        net = resnet50(zoo_pretrained)
+
+    elif net_name == 'mobilenet':
+        raise NotImplementedError
+
+    elif net_name == 'vggnet':
+        raise NotImplementedError
+
+    else:
+        raise ValueError("invalid net_name : {}".format(net_name))
+
+    if eval(pretrained_path) is not None:
+        net.load_state_dict(torch.load(pretrained_path))
+        print("pretrained {} weights will be used".format(pretrained_path))
+
+    return net
+
+
 class TrainDatasetRecursion(Dataset):
-    def __init__(self, merged_data, isNormalize, isTrain, train_ratio=0.8, seed=10):
+    def __init__(self, merged_data, args, isNormalize, isTrain, train_ratio=0.8, seed=10):
         df = merged_data[merged_data['dataset'] == 'train']
 
         if isNormalize:
@@ -166,13 +196,38 @@ class TrainDatasetRecursion(Dataset):
             self.input_array = np.array(val_df.iloc[:, -6:])
             self.output_array = np.array(val_df.loc[:, 'sirna'])
 
-
     def __len__(self):
         return self.len_dataset
 
     def __getitem__(self, index):
 
         return (self.input_array[index], self.output_array[index])
+
+    def transform(self, img, batch_num):
+        # Random horizontal flipping
+        # if random.random() > 0.5:
+        #     img = TF.hflip(img)
+        #     mask = TF.hflip(mask)
+        #
+        # # Random vertical flipping
+        # if random.random() > 0.5:
+        #     img = TF.vflip(img)
+        #     mask = TF.vflip(mask)
+        #
+        # # Random rotation
+        # if random.random() > 0.25:
+        #     angle = random.choice([90, 180, 270])
+        #     img = TF.rotate(img, angle)
+        #     mask = TF.rotate(mask, angle)
+
+        # Transform to tensor
+        img = TF.to_tensor(img)
+
+
+        normalization = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        img = normalization(img)
+
+        return img
 
     def standardize_with_nc(self, df):
         """
@@ -194,7 +249,7 @@ class TrainDatasetRecursion(Dataset):
 
 
 class TestDatasetRecursion(Dataset):
-    def __init__(self, merged_data, isNormalize):
+    def __init__(self, merged_data, args, isNormalize):
         df = merged_data[merged_data['dataset'] == 'test']
 
         if isNormalize:
