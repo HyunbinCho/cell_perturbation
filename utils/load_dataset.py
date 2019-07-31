@@ -1,6 +1,7 @@
 import sys
 import os
 import glob
+import cv2
 from collections import defaultdict
 
 import random
@@ -170,7 +171,7 @@ def load_net(net_name, pretrained_path=None, zoo_pretrained=False):
 
 
 class TrainDatasetRecursion(Dataset):
-    def __init__(self, merged_data, args, isNormalize, isTrain, train_ratio=0.8, seed=10):
+    def __init__(self, merged_data, batch_info, args, isNormalize, isTrain, train_ratio=0.8, seed=10):
         df = merged_data[merged_data['dataset'] == 'train']
 
         if isNormalize:
@@ -200,8 +201,11 @@ class TrainDatasetRecursion(Dataset):
         return self.len_dataset
 
     def __getitem__(self, index):
+        img_list = [cv2.imread(self.input_array[index][i], cv2.IMREAD_GRAYSCALE) for i in range(6)]
+        img = np.dstack(img_list)
 
-        return (self.input_array[index], self.output_array[index])
+        return (img, self.output_array[index])
+        #return (self.input_array[index], self.output_array[index])
 
     def transform(self, img, batch_num):
         # Random horizontal flipping
@@ -223,6 +227,7 @@ class TrainDatasetRecursion(Dataset):
         # Transform to tensor
         img = TF.to_tensor(img)
 
+        mean = batch_info['']
 
         normalization = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         img = normalization(img)
@@ -249,7 +254,7 @@ class TrainDatasetRecursion(Dataset):
 
 
 class TestDatasetRecursion(Dataset):
-    def __init__(self, merged_data, args, isNormalize):
+    def __init__(self, merged_data, batch_info, args, isNormalize):
         df = merged_data[merged_data['dataset'] == 'test']
 
         if isNormalize:
@@ -265,7 +270,10 @@ class TestDatasetRecursion(Dataset):
         return self.len_dataset
 
     def __getitem__(self, index):
-        return self.input_array[index]
+        img_list = [cv2.imread(self.input_array[index][i], cv2.IMREAD_GRAYSCALE) for i in range(6)]
+        img = np.dstack(img_list)
+
+        return img
 
     def standardize_with_nc(self, df):
         """
