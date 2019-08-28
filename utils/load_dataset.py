@@ -2,14 +2,15 @@ import sys
 import os
 import glob
 import cv2
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import random
 
 import pandas as pd
 import numpy as np
 
-sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
+# sys.path.append("/home/hyunbin/git_repositoriesas/rxrx1-utils")
+sys.path.append("/home/hyunbin/utils/rxrx1-utils")
 import rxrx.io as rio
 
 import torch
@@ -18,9 +19,12 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models.resnet import resnet18, resnet50
 #from torchvision.models import mobilenet torch의 v1.2.0 으로 업데이트 필요
+from torchvision.models import densenet121
 
 import torchvision.transforms.functional as TF
 from torchvision import transforms
+
+import PIL.Image as Image
 
 
 # def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
@@ -47,7 +51,7 @@ from torchvision import transforms
 #     return result
 
 
-def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
+def load_data_cell_perturbation(base_path="/hdd/LINUX/cell_perturbation/train/"):
     """
         return a dictionary
         -keys : sample info
@@ -87,12 +91,15 @@ def load_data_cell_perturbation(base_path="/data2/cell_perturbation/train/"):
     return dataset_dict
 
 
-def load_metadata():
+def load_metadata(from_server=False, path="/hdd/LINUX/codes/cell_perturbation/metadata.pickle"):
     """
     returns metadata as pandas.DataFrame
     """
-    #metadata = rio.combine_metadata()
-    metadata = pd.read_pickle("/data2/cell_perturbation/metadata.pickle")
+    if from_server:
+        metadata = rio.combine_metadata()
+        pd.to_pickle(metadata, path)
+    else:
+        metadata = pd.read_pickle(path)
 
     return metadata
 
@@ -149,10 +156,12 @@ def merge_all_data_to_metadata(datalist, metadata):
 
 def load_net(net_name, pretrained_path=None, zoo_pretrained=False):
     if net_name == 'resnet18':
-        net = resnet18(zoo_pretrained)
+        net = resnet18(zoo_pretrained, num_classes=1108)
+        net.conv1 = nn.Conv2d(6, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
     elif net_name == 'resnet50':
-        net = resnet50(zoo_pretrained)
+        net = resnet50(zoo_pretrained, num_classes=1108)
+        net.conv1 = nn.Conv2d(6, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
     elif net_name == 'mobilenet':
         raise NotImplementedError
@@ -160,10 +169,20 @@ def load_net(net_name, pretrained_path=None, zoo_pretrained=False):
     elif net_name == 'vggnet':
         raise NotImplementedError
 
+    elif net_name == 'densenet121':
+        net = densenet121(zoo_pretrained, num_classes=1108)
+        net.features = nn.Sequential(OrderedDict([
+            ('conv0', nn.Conv2d(6, net.num_init_features, kernel_size=7, stride=2, #modify input channels to 6
+                                padding=3, bias=False)),
+            ('norm0', nn.BatchNorm2d(net.num_init_features)),
+            ('relu0', nn.ReLU(inplace=True)),
+            ('pool0', nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
+        ]))
+
     else:
         raise ValueError("invalid net_name : {}".format(net_name))
 
-    if eval(pretrained_path) is not None:
+    if pretrained_path is not None:
         net.load_state_dict(torch.load(pretrained_path))
         print("pretrained {} weights will be used".format(pretrained_path))
 
@@ -172,10 +191,15 @@ def load_net(net_name, pretrained_path=None, zoo_pretrained=False):
 
 class TrainDatasetRecursion(Dataset):
     def __init__(self, merged_data, batch_info, args, isNormalize, isTrain, train_ratio=0.8, seed=10):
+
+        self.isTrain = isTrain
+        self.batch_info = batch_info
+        self.resize = args.resize
+
         df = merged_data[merged_data['dataset'] == 'train']
 
-        if isNormalize:
-            df = self.standardize_with_nc(df)
+        # if isNormalize:
+        #     df = self.standardize_with_nc(df)
 
         #extract only treatments
         df = df[df['well_type'] == 'treatment']
@@ -189,13 +213,15 @@ class TrainDatasetRecursion(Dataset):
         if isTrain:
             train_df = df.iloc[:train_num, :]
             self.len_dataset = len(train_df)
+            self.experiment_array = np.array(train_df.loc[:, 'experiment'])
             self.input_array = np.array(train_df.iloc[:, -6:])
-            self.output_array = np.array(train_df.loc[:, 'sirna'])
+            self.output_array = train_df.loc[:, 'sirna'].to_numpy()
         else:
             val_df = df.iloc[train_num:, :]
             self.len_dataset = len(val_df)
+            self.experiment_array = np.array(val_df.loc[:, 'experiment'])
             self.input_array = np.array(val_df.iloc[:, -6:])
-            self.output_array = np.array(val_df.loc[:, 'sirna'])
+            self.output_array = val_df.loc[:, 'sirna'].to_numpy()
 
     def __len__(self):
         return self.len_dataset
@@ -204,10 +230,17 @@ class TrainDatasetRecursion(Dataset):
         img_list = [cv2.imread(self.input_array[index][i], cv2.IMREAD_GRAYSCALE) for i in range(6)]
         img = np.dstack(img_list)
 
-        return (img, self.output_array[index])
+        if self.isTrain:
+            experiment = self.experiment_array[index]
+        else:
+            experiment = self.experiment_array[index]
+
+        img = self.transform(img, experiment)
+
+        return (img, int(float(self.output_array[index])))
         #return (self.input_array[index], self.output_array[index])
 
-    def transform(self, img, batch_num):
+    def transform(self, img, experiment):
         # Random horizontal flipping
         # if random.random() > 0.5:
         #     img = TF.hflip(img)
@@ -224,12 +257,17 @@ class TrainDatasetRecursion(Dataset):
         #     img = TF.rotate(img, angle)
         #     mask = TF.rotate(mask, angle)
 
+        # Resize
+        resize = transforms.Resize((self.resize, self.resize), Image.LANCZOS)
+        img = resize(img)
+
         # Transform to tensor
         img = TF.to_tensor(img)
 
-        mean = batch_info['']
+        mean = self.batch_info[experiment]['mean']
+        std = self.batch_info[experiment]['std']
 
-        normalization = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        normalization = transforms.Normalize(mean, std)
         img = normalization(img)
 
         return img
@@ -255,16 +293,21 @@ class TrainDatasetRecursion(Dataset):
 
 class TestDatasetRecursion(Dataset):
     def __init__(self, merged_data, batch_info, args, isNormalize):
+
+        self.batch_info = batch_info
+        self.resize = args.resize
+
         df = merged_data[merged_data['dataset'] == 'test']
 
-        if isNormalize:
-            df = self.standardize_with_nc(df)
+        # if isNormalize:
+        #     df = self.standardize_with_nc(df)
 
         # extract only treatments
         test_df = df[df['well_type'] == 'treatment']
 
         self.len_dataset = len(test_df)
         self.input_array = np.array(test_df.iloc[:, -6:])
+        self.experiment_array = np.array(test_df.loc[:, 'experiment'])
 
     def __len__(self):
         return self.len_dataset
@@ -272,6 +315,41 @@ class TestDatasetRecursion(Dataset):
     def __getitem__(self, index):
         img_list = [cv2.imread(self.input_array[index][i], cv2.IMREAD_GRAYSCALE) for i in range(6)]
         img = np.dstack(img_list)
+
+        experiment = self.experiment_array[index]
+
+        img = self.transform(img, experiment)
+        return img
+
+    def transform(self, img, experiment):
+        # Random horizontal flipping
+        # if random.random() > 0.5:
+        #     img = TF.hflip(img)
+        #     mask = TF.hflip(mask)
+        #
+        # # Random vertical flipping
+        # if random.random() > 0.5:
+        #     img = TF.vflip(img)
+        #     mask = TF.vflip(mask)
+        #
+        # # Random rotation
+        # if random.random() > 0.25:
+        #     angle = random.choice([90, 180, 270])
+        #     img = TF.rotate(img, angle)
+        #     mask = TF.rotate(mask, angle)
+
+        # Resize
+        resize = transforms.Resize((self.resize, self.resize), Image.LANCZOS)
+        img = resize(img)
+
+        # Transform to tensor
+        img = TF.to_tensor(img)
+
+        mean = self.batch_info[experiment]['mean']
+        std = self.batch_info[experiment]['std']
+
+        normalization = transforms.Normalize(mean, std)
+        img = normalization(img)
 
         return img
 

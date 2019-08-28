@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import cv2
 import math
 
-sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
+sys.path.append("/home/hyunbin/utils/rxrx1-utils")
 import rxrx.io as rio
 
 

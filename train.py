@@ -26,8 +26,15 @@ import yaml
 
 
 def train_net(net, merged_data, args, **kwargs):
+    """
+    TODO 2019-08-28
+    트레이닝 데이터 개수 : 약 80,000 개 (512 x 512 x 6 기준)
+    학습 0.8을 사용하면 약 62,000 개
+    batch_size 10 정도로 하면 6,200 번의 iterations
+    대략 100 iter 마다 progress 프린트되도록
+    """
 
-    ##################### set hyperparameters #######################
+    ##################### set parameters #######################
     step_size= 10 #learning rate decay step size
     reducelr_patience = 6
     lr_decay = 0.3
@@ -69,11 +76,13 @@ def train_net(net, merged_data, args, **kwargs):
 
     val_benchmark = 10000000
 
-    train_dataset = TrainDatasetRecursion(merged_data=merged_data, args=args, isNormalize=False, isTrain=True, train_ratio=0.8, seed=10)
-    val_dataset = TrainDatasetRecursion(merged_data=merged_data, args=args, isNormalize=False, isTrain=False, train_ratio=0.8, seed=10)
+    train_dataset = TrainDatasetRecursion(merged_data=merged_data, batch_info=batch_info_dict,
+                                          args=args, isNormalize=args.normalize, isTrain=True, train_ratio=0.8, seed=10)
+    val_dataset = TrainDatasetRecursion(merged_data=merged_data, batch_info=batch_info_dict,
+                                        args=args, isNormalize=args.normalize, isTrain=False, train_ratio=0.8, seed=10)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=8)
-    val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=True, num_workers=8)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
     ####training & validation start#######
     for epoch in range(args.epochs):
@@ -83,14 +92,22 @@ def train_net(net, merged_data, args, **kwargs):
         writer_arguments(writer, args, epoch)
 
         epoch_train_loss = 0
+        epoch_train_correct = 0
 
         N_train = len(train_dataloader)
         net.train()
+        print("training start :", time.ctime())
         for i, (img, labels) in enumerate(train_dataloader):
+            if i % 100 == 0:
+                print("progress : {} / {}".format(i+1, N_train))
+
+
             img = img.cuda()
             labels = labels.cuda()
 
             outputs = net(img)
+            _, predicted = torch.max(outputs.data, 1)
+            epoch_train_correct += (predicted == labels).sum().item()
 
             loss = criterion(outputs, labels)
 
@@ -101,6 +118,7 @@ def train_net(net, merged_data, args, **kwargs):
             epoch_train_loss = epoch_train_loss + loss.item()
 
         writer_training(writer, epoch_train_loss / N_train, epoch)
+        print("accuracy : {}".format(epoch_train_correct / N_train))
         print('Epoch finished! Train Loss: {}'.format(epoch_train_loss / N_train))
 
         # VALIDATION
@@ -110,7 +128,7 @@ def train_net(net, merged_data, args, **kwargs):
         # If validation loss is lower than the previous model-checkpoint, a new model-checkpoint saved
         if val_benchmark > epoch_val_loss:
             val_benchmark = epoch_val_loss
-            checkpoint_path = os.path.join(model_path, 'model', args.model_index, 'CP{}.pth'.format(epoch + 1))
+            checkpoint_path = os.path.join(model_path, args.model_index, 'CP{}.pth'.format(epoch + 1))
             torch.save(net.state_dict(), checkpoint_path)
             print('Checkpoint {} saved'.format(epoch + 1))
 
@@ -125,19 +143,26 @@ def train_net(net, merged_data, args, **kwargs):
 
 def eval_net(net, val_dataloader, criterion, args):
     epoch_val_loss = 0
+    epoch_val_correct = 0
 
     N_val = len(val_dataloader)
     net.eval()
+    print("validation start:", time.ctime())
     for i, (img, labels) in enumerate(val_dataloader):
+        if i % 100 == 0:
+            print("progress : {} / {}".format(i+1, N_val))
 
         img = img.cuda()
         labels = labels.cuda()
         outputs = net(img)
+        _, predicted = torch.max(outputs.data, 1)
+        epoch_val_correct += (predicted == labels).sum().item()
 
         val_loss = criterion(outputs, labels)
 
         epoch_val_loss = epoch_val_loss + val_loss.item()
 
+    print("accuracy : {}".format(epoch_val_correct / N_val))
     print('Epoch finished!   Val Loss: {}'.format(epoch_val_loss / N_val))
     return epoch_val_loss
 
@@ -157,6 +182,8 @@ def get_args():
                       type='float', help='learning rate')
     parser.add_option('-g', '--gpu', dest='gpu', default=0,
                       type='int', help='what index of gpu will be used for this code')
+    parser.add_option('-n', '--net', dest='net_name', type='str',
+                      default="resnet18", help='network architecture')
     parser.add_option('-y', '--model-index', dest='model_index', type='str',
                       default="model_default", help='model_name (used to separate individual codes execution)')
     parser.add_option('-s', '--scheduler', dest='scheduler',
@@ -172,20 +199,23 @@ def get_args():
     parser.add_option('--cell', dest='cell',
                       default='all',
                       help='cell name to be used (if "all", all cells will be in dataset)')
-    parser.add_option('')
+    #parser.add_option('')
 
     (args, _) = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
-    data_path = "/data2/cell_perturbation/"
-    model_path = "/data2/cell_perturbation/hyunbin/model/"
-    batch_info_path = "/home/hyunbin/codes/cell_perturbation/batch_info.yaml"
+    args = get_args()
+
+    data_path = "/hdd/LINUX/cell_perturbation/"
+    model_path = "/hdd/LINUX/cell_perturbation/hyunbin/model/"
+    batch_info_path = "/hdd/LINUX/codes/cell_perturbation/batch_info.yaml"
+    metadata_path = "/hdd/LINUX/codes/cell_perturbation/metadata.pickle"
     #### create dataset ####
     traindata = load_data_cell_perturbation(base_path=os.path.join(data_path, "train"))
     testdata = load_data_cell_perturbation(base_path=os.path.join(data_path, "test"))
-    metadata = load_metadata()
+    metadata = load_metadata(from_server=False, path=metadata_path)
 
     merged_data = merge_all_data_to_metadata([traindata, testdata], metadata)
 
@@ -193,7 +223,6 @@ if __name__ == "__main__":
         batch_info_dict = yaml.load(yaml_file)
 
     #############load parameters#######################
-    args = get_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     #create writer with tensorboardX
@@ -202,7 +231,7 @@ if __name__ == "__main__":
     writer = SummaryWriter('runs/{}'.format(args.model_index))
 
     #### load network #####
-    net = load_net()
+    net = load_net(args.net_name)
     torch.backends.cudnn.benchmark = True
     net = net.cuda()
 

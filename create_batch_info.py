@@ -7,7 +7,7 @@ import pandas as pd
 from collections import defaultdict
 from utils.load_dataset import *
 
-sys.path.append("/home/hyunbin/git_repositories/rxrx1-utils")
+sys.path.append("/home/hyunbin/utils/rxrx1-utils")
 import rxrx.io as rio
 
 import yaml
@@ -21,7 +21,7 @@ def calculate_subfunc(image_array):
     return mean, std
 
 
-def create_batch_info(datapath, outpath):
+def create_batch_info(datapath, outpath, metadata_path):
     """
     calculates of mean and stddev per batch samples only using Negative Control
 
@@ -49,7 +49,7 @@ def create_batch_info(datapath, outpath):
 
     traindata = load_data_cell_perturbation(base_path=os.path.join(datapath, "train"))
     testdata = load_data_cell_perturbation(base_path=os.path.join(datapath, "test"))
-    metadata = load_metadata()
+    metadata = load_metadata(from_server=True, path=metadata_path)
 
     merged_data = merge_all_data_to_metadata([traindata, testdata], metadata)
     print(merged_data)
@@ -86,6 +86,6 @@ def create_batch_info(datapath, outpath):
 
 
 if __name__ == "__main__":
-    data_path = "/data2/cell_perturbation"
+    data_path = "/hdd/cell_perturbation"
 
     create_batch_info(data_path, "./batch_info.yaml")
